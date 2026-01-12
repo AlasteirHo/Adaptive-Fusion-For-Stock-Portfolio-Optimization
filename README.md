@@ -1,9 +1,9 @@
-# Meta Learning for Multi-Source Sentiment Analysis
+# Meta Learning for Adaptive Multi-Source Sentiment Analysis
 
 A meta-learning approach to financial sentiment analysis that integrates multiple data sources (news articles and social media) to predict stock price movements and optimize investment portfolios.
 
-**Author:** Alasteir Ho
-**Institution:** University of Greenwich (Final Year Project)
+**Author:** Alasteir Ho (ID: 001295065)
+**University:** University of Greenwich
 
 ## Overview
 
@@ -168,5 +168,6 @@ MAX_WEIGHT = 0.25             # Max allocation per stock
 
 ## License
 
-This project is part of a Final Year Project at the University of Greenwich.
+This project is part the Final Year Project module at the University of Greenwich.
+
 
