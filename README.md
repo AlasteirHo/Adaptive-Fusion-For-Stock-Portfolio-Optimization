@@ -7,7 +7,7 @@ A meta-learning approach to financial sentiment analysis that integrates multipl
 
 ## Overview
 
-This system performs the following workflow:
+Currently the system performs the following workflow:
 
 1. **Data Collection** - Scrapes news articles from GDELT API and Twitter/X posts for 20 major stocks
 2. **Sentiment Analysis** - Uses FinBERT to convert news headlines into sentiment scores
@@ -169,3 +169,4 @@ MAX_WEIGHT = 0.25             # Max allocation per stock
 ## License
 
 This project is part of a Final Year Project at the University of Greenwich.
+
