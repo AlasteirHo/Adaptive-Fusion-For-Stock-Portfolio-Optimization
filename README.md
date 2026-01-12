@@ -102,9 +102,9 @@ python scrapers/GDELTscraper.py
 ```
 Outputs: `gdelt_news_data/{TICKER}_news.csv`
 
-### Step 2: Collect Twitter Data (Optional)
+### Step 2: Collect Twitter Data (twitter_scraper.py and twitter_scraper2.py)
 ```bash
-python scrapers/twitter_scraper2.py
+python scrapers/twitter_scraper.py
 ```
 Outputs: `tweets/tweets_{TICKER}.csv`
 
@@ -169,5 +169,6 @@ MAX_WEIGHT = 0.25             # Max allocation per stock
 ## License
 
 This project is part the Final Year Project module at the University of Greenwich.
+
 
 
