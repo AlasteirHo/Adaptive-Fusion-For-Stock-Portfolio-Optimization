@@ -33,7 +33,7 @@ class TwitterScraper:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
 
-        # Auto-detect Chrome version and download matching driver
+        # Auto-detect Chrome version and download matching driver (Due to chrome updates)
         self.driver = uc.Chrome(
             options=options,
             driver_executable_path=None,  # Let it download fresh
@@ -68,7 +68,13 @@ class TwitterScraper:
             if username_input is None:
                 raise Exception("Could not find username input")
 
-            username_input.send_keys(self.username)
+            # Clear any existing text and type username character by character
+            username_input.clear()
+            time.sleep(0.5)
+            for char in self.username:
+                username_input.send_keys(char)
+                time.sleep(random.uniform(0.05, 0.15))  # Human-like typing delay
+            time.sleep(0.5)
             username_input.send_keys(Keys.ENTER)
             time.sleep(3)
 
@@ -88,20 +94,26 @@ class TwitterScraper:
             password_input = WebDriverWait(self.driver, 15).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, 'input[name="password"]'))
             )
-            password_input.send_keys(self.password)
+            # Clear any existing text and type password character by character
+            password_input.clear()
+            time.sleep(0.5)
+            for char in self.password:
+                password_input.send_keys(char)
+                time.sleep(random.uniform(0.05, 0.15))  # Human-like typing delay
+            time.sleep(0.5)
             password_input.send_keys(Keys.ENTER)
             time.sleep(5)
 
-            print("Login successful!")
+            print("Logged in successfully")
 
         except Exception as e:
             print(f"Automated login failed: {e}")
-            print("\n=== MANUAL LOGIN REQUIRED ===")
-            print("Please log in manually in the browser window.")
-            input("Press Enter after you have logged in successfully...")
+            print("\nMANUAL LOGIN REQUIRED")
+            print("Log in manually in the browser window.")
+            input("Press Enter in the terminal after logging in")
 
-    def check_for_error_message(self):
-        """Check if Twitter is showing 'Something went wrong' error message"""
+    def check_for_error_message(self): # Rate limited
+        # Error handling for 'Something went wrong' error message
         try:
             page_source = self.driver.page_source.lower()
             error_indicators = [
@@ -118,10 +130,12 @@ class TwitterScraper:
             return False
 
     def search_tweets(self, ticker, date, max_refresh_attempts=3, error_wait_minutes=10):
-        """Search for tweets with ticker symbol on a specific date"""
-        # Format: $AMD until:2025-09-10 since:2025-09-09
-        since_date = (date - timedelta(days=1)).strftime("%Y-%m-%d")
-        until_date = date.strftime("%Y-%m-%d")
+        # Search for tweets with ticker symbol on a specific date
+        # Format: $AMD since:2025-10-10 until:2025-10-10
+        # Twitter's 'since' is inclusive, 'until' is exclusive
+        # So to get tweets ON a specific date, use since:date until:date+1
+        since_date = date.strftime("%Y-%m-%d")
+        until_date = (date + timedelta(days=1)).strftime("%Y-%m-%d")
 
         query = f"${ticker} until:{until_date} since:{since_date}"
         search_url = f"https://x.com/search?q={query}&src=typed_query&f=top"
@@ -131,23 +145,23 @@ class TwitterScraper:
 
         tweets_with_dollar = []
         
-        # Try to scrape tweets, refresh page if none found
+        # Try to scrape tweets, refresh page if empty
         for attempt in range(max_refresh_attempts):
             # Check for error message before scraping
             if self.check_for_error_message():
-                print(f"    Detected 'Something went wrong' error. Waiting {error_wait_minutes} minutes before retrying...")
+                print(f"'Something went wrong' error found. Waiting {error_wait_minutes} minutes before retrying")
                 # Wait for the specified time (default 10 minutes)
                 for remaining in range(error_wait_minutes, 0, -1):
                     print(f"    Waiting... {remaining} minutes remaining", end='\r')
                     time.sleep(60)
                 print()  # New line after countdown
-                print(f"    Refreshing page after {error_wait_minutes} minute wait...")
+                print(f"Refreshing page after {error_wait_minutes} minutes")
                 self.driver.refresh()
                 time.sleep(5)
 
                 # Check again after refresh
                 if self.check_for_error_message():
-                    print(f"    Error persists after waiting. Continuing to next attempt...")
+                    print(f"Error still occurs after waiting. Continuing to next date")
                     continue
 
             tweets_with_dollar = self.scrape_tweets()
@@ -157,18 +171,18 @@ class TwitterScraper:
 
             # No tweets found, refresh and retry
             if attempt < max_refresh_attempts - 1:
-                print(f"    No posts found, refreshing page (attempt {attempt + 2}/{max_refresh_attempts})...")
+                print(f"No posts found, refreshing page (attempt {attempt + 2}/{max_refresh_attempts})...")
                 self.driver.refresh()
                 time.sleep(3)
 
-        # If we found less than 10 tweets with $ sign, also try without it to get more
+        # If we found less than 10 tweets with $ sign, also try without it to get more tweets
         if len(tweets_with_dollar) < 10:
             if len(tweets_with_dollar) == 0:
-                print(f"    No posts found with ${ticker}, trying without $ sign: {ticker}...")
+                print(f"No posts found with ${ticker}, trying without $ sign: {ticker}")
             else:
-                print(f"    Found only {len(tweets_with_dollar)} tweets with ${ticker}")
-                print(f"    Searching without $ sign to collect more tweets: {ticker}...")
-            
+                print(f"Found only {len(tweets_with_dollar)} tweets with ${ticker}")
+                print(f"Searching without $ sign to collect more tweets: {ticker}")
+            # Query constructor
             query_no_dollar = f"{ticker} until:{until_date} since:{since_date}"
             search_url_no_dollar = f"https://x.com/search?q={query_no_dollar}&src=typed_query&f=top"
             
@@ -214,13 +228,15 @@ class TwitterScraper:
                         existing_tweets.add(tweet_id)
                         added_count += 1
                 
-                print(f"    Added {added_count} unique tweets from search without $ sign")
-                print(f"    Total tweets collected: {len(tweets_with_dollar)}")
+                print(f"Added {added_count} unique tweets from search without $ sign")
+                print(f"Total tweets collected: {len(tweets_with_dollar)}")
         
         return tweets_with_dollar
+    
 
+# ============ HTML text extraction ==============
     def scrape_tweets(self):
-        """Scrape tweets from the current page, scrolling to the very end"""
+    # Scrape tweets from the current page, scrolling to the very end
         tweets_data = []
 
         # Keep browser window focused to prevent Twitter from throttling content loading
@@ -250,19 +266,18 @@ class TwitterScraper:
             # Scroll down using multiple methods to ensure it works even when unfocused
             self.driver.execute_script("""
                 window.scrollTo(0, document.body.scrollHeight);
-                document.documentElement.scrollTop = document.documentElement.scrollHeight;
-            """)
-            time.sleep(random.uniform(2, 4))  # Randomized scroll delay
+                document.documentElement.scrollTop = document.documentElement.scrollHeight;""")
+            time.sleep(random.uniform(2, 4))  # Randomized scroll delay (Bot detection Evasion)
 
             new_height = self.driver.execute_script("return document.body.scrollHeight")
             current_tweet_count = len(tweets_data)
 
-            # Check both height AND tweet count to determine if we've reached the end
+            # Check both height AND tweet count to determine if we've reached the end of the webpage
             if new_height == last_height and current_tweet_count == last_tweet_count:
                 no_change_count += 1
                 # Check if we've truly reached the end (multiple attempts with no new content)
                 if no_change_count >= max_no_change:
-                    print(f"    Reached end of page after {no_change_count} unchanged scrolls ({current_tweet_count} tweets)")
+                    print(f"Reached end of page after {no_change_count} unchanged scrolls ({current_tweet_count} tweets)")
                     break
                 # Wait a bit longer and try again in case content is still loading
                 time.sleep(1.5)
@@ -275,7 +290,7 @@ class TwitterScraper:
         return tweets_data
 
     def extract_tweet_data(self, tweet_element):
-        """Extract data from a single tweet element"""
+        # Extract data from a single tweet element
         try:
             # Tweet body
             body_element = tweet_element.find_element(By.CSS_SELECTOR, 'div[data-testid="tweetText"]')
@@ -315,7 +330,7 @@ class TwitterScraper:
             return None
 
     def get_metric(self, tweet_element, metric_type):
-        """Extract engagement metric (replies, retweets, likes)"""
+        # Extract engagement metric (replies, retweets, likes)"""
         try:
             element = tweet_element.find_element(By.CSS_SELECTOR, f'button[data-testid="{metric_type}"]')
             text = element.text.strip()
@@ -331,7 +346,7 @@ class TwitterScraper:
             return 0
 
     def scrape_date_range(self, ticker, start_date, end_date, output_file):
-        """Scrape tweets for a date range, resuming from latest date in CSV if exists"""
+        # Scrape tweets for a date range, resuming from latest date in CSV if exists
         # Check for existing CSV and resume from next day after latest date
         latest_date = self.get_latest_date_from_csv(output_file)
 
@@ -346,14 +361,9 @@ class TwitterScraper:
             print(f"Found existing CSV with data up to {latest_date.strftime('%Y-%m-%d')}")
             print(f"Resuming from {resume_date.strftime('%Y-%m-%d')}...")
             current_date = resume_date
-
-            # Load existing tweets to preserve them
-            all_tweets = self.load_existing_tweets(output_file)
-            print(f"Loaded {len(all_tweets)} existing tweets from CSV")
         else:
             print(f"No existing CSV found, starting fresh from {start_date.strftime('%Y-%m-%d')}")
             current_date = start_date
-            all_tweets = []
 
         while current_date <= end_date:
             print(f"Scraping ${ticker} for {current_date.strftime('%Y-%m-%d')}...")
@@ -362,53 +372,60 @@ class TwitterScraper:
 
             for tweet in tweets:
                 tweet['ticker'] = ticker
-                tweet['search_date'] = current_date.strftime('%Y-%m-%d')
-                all_tweets.append(tweet)
 
-            print(f"  Found {len(tweets)} tweets")
+            print(f"Found {len(tweets)} tweets")
 
-            # Save progress incrementally
-            self.save_to_csv(all_tweets, output_file)
+            # Append only new tweets to CSV (does not overwrite existing data)
+            self.save_to_csv(tweets, output_file)
 
             current_date += timedelta(days=1)
             time.sleep(random.uniform(5, 10))  # Increased randomized delay between searches
 
-        return all_tweets
+        return tweets
 
     def save_to_csv(self, tweets, filename):
-        """Save tweets to CSV file"""
+        # Append new tweets to CSV file (does not overwrite existing data)
         if not tweets:
             return
 
-        fieldnames = ['ticker', 'search_date', 'username', 'body', 'post_date', 'replies', 'retweets', 'likes']
+        fieldnames = ['ticker', 'username', 'body', 'post_date', 'replies', 'retweets', 'likes']
 
-        with open(filename, 'w', newline='', encoding='utf-8') as f:
+        # Check if file exists to determine if we need to write header
+        file_exists = os.path.exists(filename)
+
+        with open(filename, 'a', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
+            if not file_exists:
+                writer.writeheader()
             writer.writerows(tweets)
 
-        print(f"Saved {len(tweets)} tweets to {filename}")
+        print(f"Appended {len(tweets)} tweets to {filename}")
 
     def get_latest_date_from_csv(self, filename):
-        """Get the latest search_date from an existing CSV file to resume scraping"""
+        # Get the latest post_date from an existing CSV file to resume scraping
         if not os.path.exists(filename):
             return None
 
         try:
             df = pd.read_csv(filename)
-            if df.empty or 'search_date' not in df.columns:
+            if df.empty or 'post_date' not in df.columns:
                 return None
 
-            # Get the maximum search_date
-            latest_date_str = df['search_date'].max()
-            latest_date = datetime.strptime(latest_date_str, '%Y-%m-%d')
-            return latest_date
+            # Parse post_date (ISO format) and get the maximum date
+            df['post_date_parsed'] = pd.to_datetime(df['post_date'], errors='coerce')
+            latest_date = df['post_date_parsed'].max()
+
+            if pd.isna(latest_date):
+                return None
+
+            # Return as datetime with just the date part
+            return datetime(latest_date.year, latest_date.month, latest_date.day)
         except Exception as e:
             print(f"Error reading CSV file {filename}: {e}")
             return None
 
     def load_existing_tweets(self, filename):
-        """Load existing tweets from CSV file"""
+        # Load existing tweets from CSV file
         if not os.path.exists(filename):
             return []
 
@@ -426,15 +443,15 @@ class TwitterScraper:
             try:
                 self.driver.quit()
             except OSError:
-                pass  # Ignore Windows handle errors during cleanup
+                pass  # Ignore Windows handle errors
 
 
 def main():
-    # Login Details from environment variables
+    # Login Details from environment variables (.gitignored)
     USERNAME = os.getenv("TWITTER_USERNAME")
     PASSWORD = os.getenv("TWITTER_PASSWORD")  
 
-    # All tickers to scrape
+    # All tickers to scrape (Half of the queries to avoid rate limits)
     TICKERS = [
         # Tech / Semiconductors
         "AMD",
@@ -454,17 +471,17 @@ def main():
     scraper = TwitterScraper(USERNAME, PASSWORD)
 
     try:
-        print("Starting browser...")
+        print("Starting Google Chrome browser")
         scraper.start_driver()
-        print("Logging in...")
+        print("Logging in")
         scraper.login()
 
-        print(f"Starting to scrape tweets for {len(TICKERS)} tickers...")
+        print(f"Starting to scrape tweets for {len(TICKERS)}")
 
         for ticker in TICKERS:
             output_file = f"tweets_{ticker}.csv"
             print(f"\n{'='*50}")
-            print(f"Scraping ${ticker}...")
+            print(f"Scraping ${ticker}")
             print(f"{'='*50}")
             scraper.scrape_date_range(ticker, START_DATE, END_DATE, output_file)
             print(f"Completed ${ticker}, saved to {output_file}")
