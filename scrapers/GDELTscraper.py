@@ -12,9 +12,8 @@ from datetime import datetime, timedelta
 import time
 import os
 
-# Variables
-# ============================================
-# Impt Consideration: GDELT API requires search keywords to be at least 4 characters
+# Search terms used for each ticker
+# Important Consideration: GDELT API requires search keywords to be at least 4 characters
 TICKERS = {
     # Tech
     "NVDA": ["Nvidia", "Nvidia stock", "Jensen Huang", "Nvidia GPU"],
@@ -55,7 +54,7 @@ TICKERS = {
 
 START_DATE = datetime(2023, 10, 10, 0, 0, 0)  # 12:00 AM on 10/10/2023
 END_DATE = datetime(2025, 10, 10, 23, 59, 59)  # 11:59 PM on 10/10/2025
-OUTPUT_DIR = "gdelt_news_collection"
+OUTPUT_DIR = "gdelt_news_data"
 
 # Respecting the GDELT limits for queries, chunk into smaller periods
 CHUNK_DAYS = 14  # 2-week chunks 
@@ -85,9 +84,8 @@ REPUTABLE_SOURCES = {
     'prnewswire.com', 'globenewswire.com', 'businesswire.com',
 }
 
-# ============================================
+
 # Functions for Scraping
-# ============================================
 # Load existing CSV data for a ticker and return (DataFrame, set of scraped dates).
 def load_existing_data(ticker: str, output_dir: str) -> tuple:
     filepath = os.path.join(output_dir, f"{ticker}_news.csv")
@@ -109,10 +107,10 @@ def load_existing_data(ticker: str, output_dir: str) -> tuple:
 
                 cleaned_count = len(df)
                 if original_count != cleaned_count:
-                    print(f"  [CLEANED] Removed {original_count - cleaned_count} corrupted/incomplete rows")
+                    print(f"[CLEANED] Removed {original_count - cleaned_count} corrupted/incomplete rows")
                     # Save the cleaned data back to CSV
                     df.to_csv(filepath, index=False)
-                    print(f"  [SAVED] Cleaned CSV saved with {cleaned_count} valid rows")
+                    print(f"[SAVED] Cleaned CSV saved with {cleaned_count} valid rows")
 
                 # Gets unique dates that have been scraped
                 scraped_dates = set(df['date'].dt.date.dropna())
@@ -132,7 +130,7 @@ def get_unscraped_chunks(date_chunks: list, scraped_dates: set) -> list:
     # Find the latest scraped date and resume from the next day
     latest_scraped = max(scraped_dates)
     resume_date = latest_scraped + timedelta(days=1)
-    print(f"  [RESUMING] Latest scraped date: {latest_scraped}, resuming from: {resume_date}")
+    print(f"[RESUMING] Latest scraped date: {latest_scraped}, resuming from: {resume_date}")
 
     unscraped = []
     for chunk_start, chunk_end in date_chunks:
