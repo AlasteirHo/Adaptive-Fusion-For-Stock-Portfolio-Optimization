@@ -1,6 +1,6 @@
-# Meta Learning for Multi-Source Sentiment Analysis
+# Adaptive Fusion for Multi-Source Sentiment Analysis
 
-A meta-learning approach to financial sentiment analysis that integrates multiple data sources (news articles and social media) to predict stock price movements and optimize investment portfolios.
+An adaptive fusion approach to financial sentiment analysis that integrates multiple data sources (news articles and social media) and technical indicators to predict stock price direction and optimize an investment portfolio.
 
 **Author:** Alasteir Ho
 **Institution:** University of Greenwich (Final Year Project)
@@ -15,18 +15,22 @@ This system performs the following workflow:
 
 ## Supported Stocks
 
-Major S&P 500 stocks across multiple sectors:
+Major S&P 500 stocks across 7 sectors:
 
 | Sector | Tickers |
 |--------|---------|
-| Technology | NVDA, AAPL, MSFT, AVGO, ORCL, GOOGL, META, AMZN, TSLA |
-| Finance | BRK.B, JPM, V, MA |
-| Energy & Consumer | XOM, HD |
+| Technology | NVDA, AAPL, MSFT, AVGO, ORCL |
+| Communication Services | GOOGL, META |
+| Consumer Discretionary | AMZN, TSLA, HD |
+| Financial Services | BRK.B, JPM, V, MA |
+| Healthcare | JNJ, LLY, UNH |
+| Consumer Staples | WMT, PG |
+| Energy | XOM |
 
 ## Technology Stack
 
-- **Languages:** Python 3.8+
-- **ML/NLP:** scikit-learn, Transformers (FinBERT/FinVADER)
+- **Languages:** Python 3.12+
+- **ML/NLP:** scikit-learn, Transformers (FinBERT/FinRoBERTa)
 - **Data handling:** Pandas, NumPy, yfinance
 - **Web Scraping:** Selenium, undetected-chromedriver, GDELT API
 - **Visualization:** Matplotlib, Jupyter Notebook
@@ -58,7 +62,7 @@ FYP/
 │
 ├── tweets_labelled/                       # Labelled tweet data
 ├── tweets_*.csv                           # Raw scraped tweets per ticker
-├── .env                                   # Environment variables (Twitter credentials)
+├── .env                                   # Environment variables
 └── .gitignore                             # Git ignore file
 ```
 
@@ -67,12 +71,19 @@ FYP/
 ### Prerequisites
 
 - Python 3.12+
+- Anaconda or Miniconda (recommended)
 - Chrome browser (for Twitter scraping)
-- CUDA-capable GPU (optional, for faster inference)
+- CUDA-capable GPU with 8GB+ VRAM (optional, for faster inference)
 
 ### Setup
 
-1. **Create virtual environment:**
+1. **Create conda environment (recommended):**
+   ```bash
+   conda create -n project python=<python_version>
+   conda activate project
+   ```
+
+   Alternatively, use venv:
    ```bash
    python -m venv venv
    venv\Scripts\activate  # Windows
@@ -81,15 +92,12 @@ FYP/
 
 2. **Install dependencies:**
    ```bash
-   pip install pandas numpy scikit-learn torch transformers
-   pip install matplotlib jupyter yfinance
-   pip install selenium undetected-chromedriver
-   pip install gdelt python-dotenv
+   pip install -r requirements.txt
    ```
 
 3. **Configure environment variables:**
 
-   Create a `.env` file with Twitter credentials:
+   Create a `.env` file with your Twitter credentials:
    ```
    TWITTER_USERNAME=your_username
    TWITTER_PASSWORD=your_password
@@ -126,14 +134,42 @@ Run the Jupyter notebooks in `Pipeline/`:
 | `trade_log.csv` | Complete trading history with buy/sell actions |
 | `price_based_*.csv` | Price-based strategy outputs |
 
+## Models
+
+### Custom FIN-RoBERTa Model
+
+We trained a custom RoBERTa-based model for financial sentiment analysis:
+
+- **Model:** [alasteirho/FIN-RoBERTa-Custom](https://huggingface.co/alasteirho/FIN-RoBERTa-Custom)
+- **Labels:** negative, neutral, positive
+
+#### Training Datasets
+
+| Dataset | Description |
+|---------|-------------|
+| [takala/financial_phrasebank](https://huggingface.co/datasets/takala/financial_phrasebank) | Financial news sentences with sentiment labels (sentences_allagree - 50% annotator agreement, 80:20 split) |
+| [zeroshot/twitter-financial-news-sentiment](https://huggingface.co/datasets/zeroshot/twitter-financial-news-sentiment) | Twitter financial news sentiment dataset |
+| [pauri32/fiqa-2018](https://huggingface.co/datasets/pauri32/fiqa-2018) | Financial Opinion Mining and Question Answering dataset |
+| [SemEval-2017 Task 5 Subtask 2](https://alt.qcri.org/semeval2017/task5/) | Fine-grained sentiment analysis on financial news headlines |
+
+#### Evaluation Dataset
+
+The model was evaluated on the [Financial PhraseBank](https://huggingface.co/datasets/takala/financial_phrasebank) dataset (sentences_allagree subset) which contains 2,264 sentences with 100% annotator agreement, ensuring high-quality ground truth labels.
+
+### Model Evaluation
+
+The model evaluation notebooks are located in `model/`:
+- `finbert.ipynb` - FinBERT evaluation
+- `finroberta.ipynb` - Custom FIN-RoBERTa evaluation
+
 ## Features
 
 - **Data Leakage Prevention:** Uses only t-1 data to predict future returns
 - **Multiple Data Sources:** Financial news (GDELT) and social media (Twitter/X)
-- **FinBERT Sentiment Analysis:** Domain-specific NLP model for financial text
+- **Custom FIN-RoBERTa Model:** Domain-specific transformer model fine-tuned on financial text
 - **Backtesting Framework:** Daily mark-to-market with benchmark comparison
-- **Portfolio Strategies:** News-aware and price-aware optimization approaches
+- **Current Portfolio Strategies:** News-aware and price-aware optimization approaches
 
 ## License
 
-This project is part of a Final Year Project at the University of Greenwich.
+This project is part of my Final Year Project at the University of Greenwich.
