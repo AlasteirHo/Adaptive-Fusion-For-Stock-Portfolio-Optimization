@@ -10,6 +10,7 @@ import time
 import os
 import sys
 import subprocess
+import json
 import pandas as pd
 
 # Load environment variables from .env file
@@ -21,6 +22,8 @@ if sys.platform == 'win32':
     atexit.register(lambda: None)
 
 class TwitterScraper:
+    COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "twitter_cookies.json")
+
     def __init__(self, username, password):
         self.username = username
         self.password = password
@@ -32,7 +35,40 @@ class TwitterScraper:
         options.add_argument("--start-maximized")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-gpu") #Disable GPU acceleration, reduce computational usage
+
+        # Additional stability flags to prevent crashes
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-sync")
+        options.add_argument("--metrics-recording-only")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--mute-audio")
+        options.add_argument("--no-first-run")
+        options.add_argument("--disable-setuid-sandbox")
+        options.add_argument("--disable-web-security")
+
+        # Use a persistent Chrome profile so the browser has history/cookies
+        # and doesn't look like a fresh bot instance each run
+        # Store profile outside OneDrive to avoid sync-related file locking
+        profile_dir = os.path.join(os.path.expanduser("~"), ".twitter_scraper_profile")
+        os.makedirs(profile_dir, exist_ok=True)
+
+        # Remove stale lock files from previous crashed sessions
+        for lock_file in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
+            lock_path = os.path.join(profile_dir, lock_file)
+            if os.path.exists(lock_path):
+                try:
+                    os.remove(lock_path)
+                except OSError:
+                    pass
+        default_lock = os.path.join(profile_dir, "Default", "Lock")
+        if os.path.exists(default_lock):
+            try:
+                os.remove(default_lock)
+            except OSError:
+                pass
 
         # Auto-detect Chrome version to install right drivers
         chrome_version = None
@@ -49,78 +85,91 @@ class TwitterScraper:
         print(f"Chrome version: {chrome_version}")
         print("Launching Chrome...")
 
-        self.driver = uc.Chrome(options=options, version_main=chrome_version)
-        print("Browser started successfully!")
+        # Pass user_data_dir to uc.Chrome() directly (not as a Chrome argument)
+        # so undetected_chromedriver can manage profile patching correctly
+        try:
+            self.driver = uc.Chrome(options=options, version_main=chrome_version, user_data_dir=profile_dir)
+            print("Browser started successfully!")
+        except Exception as e:
+            print(f"Failed to start Chrome with profile. Error: {e}")
+            print("Retrying without user_data_dir...")
+            # Fallback: try without profile if it's corrupted
+            self.driver = uc.Chrome(options=options, version_main=chrome_version)
+            print("Browser started successfully (without profile)!")
+
+    def save_cookies(self):
+        cookies = self.driver.get_cookies()
+        with open(self.COOKIE_FILE, 'w') as f:
+            json.dump(cookies, f)
+        print(f"Saved {len(cookies)} cookies to {self.COOKIE_FILE}")
+
+    def load_cookies(self):
+        if not os.path.exists(self.COOKIE_FILE):
+            return False
+        try:
+            with open(self.COOKIE_FILE, 'r') as f:
+                cookies = json.load(f)
+            # Navigate to X first so the domain matches for cookie injection
+            self.driver.get("https://x.com")
+            time.sleep(3)
+            for cookie in cookies:
+                # Removes fields that may cause selenium errors
+                cookie.pop('sameSite', None)
+                cookie.pop('storeId', None)
+                try:
+                    self.driver.add_cookie(cookie)
+                except Exception:
+                    continue
+            print(f"Loaded {len(cookies)} cookies from file")
+            # Reload the page with cookies applied
+            self.driver.get("https://x.com/home")
+            time.sleep(5)
+            # Check if we're actually logged in by looking for the home timeline
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'a[data-testid="AppTabBar_Home_Link"], a[href="/home"]'))
+                )
+                print("Cookie login successful")
+                return True
+            except:
+                print("Cookies expired or invalid")
+                return False
+        except Exception as e:
+            print(f"Failed to load cookies: {e}")
+            return False
 
     def login(self):
-        self.driver.get("https://x.com/login")
-        time.sleep(5)  # Wait longer for initial load
+        # With a persistent Chrome profile, we may already be logged in
+        self.driver.get("https://x.com/home")
+        time.sleep(5)
 
-        # Try automated login, fall back to manual if it fails
+        # Check if we're already logged in (session persisted from profile)
         try:
-            # Enter username - try multiple selectors
-            username_input = None
-            selectors = [
-                'input[name="text"]',
-                'input[type="text"]'
-            ]
-
-            for selector in selectors:
-                try:
-                    username_input = WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                    )
-                    print(f"Found username input with selector: {selector}")
-                    break
-                except:
-                    continue
-
-            if username_input is None:
-                raise Exception("Could not find username input")
-
-            # Clear any existing text and type username character by character
-            username_input.clear()
-            time.sleep(0.5)
-            for char in self.username:
-                username_input.send_keys(char)
-                time.sleep(random.uniform(0.05, 0.15))  # Human-like typing delay
-            time.sleep(0.5)
-            username_input.send_keys(Keys.ENTER)
-            time.sleep(3)
-
-            # Check if Twitter asks for phone/email verification (Human intervention)
-            try:
-                verification_input = WebDriverWait(self.driver, 5).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'input[data-testid="ocfEnterTextTextInput"]'))
-                )
-                verification_value = input("Twitter is asking for verification (phone/email). Enter the value: ")
-                verification_input.send_keys(verification_value)
-                verification_input.send_keys(Keys.ENTER)
-                time.sleep(2)
-            except:
-                pass
-
-            # Enter password
-            password_input = WebDriverWait(self.driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'input[name="password"]'))
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'a[data-testid="AppTabBar_Home_Link"], a[href="/home"]'))
             )
-            # Clear any existing text and type password character by character
-            password_input.clear()
-            time.sleep(0.5)
-            for char in self.password:
-                password_input.send_keys(char)
-                time.sleep(random.uniform(0.05, 0.15))  # Simulated human typing speed for bot evastion
-            time.sleep(0.5)
-            password_input.send_keys(Keys.ENTER)
-            time.sleep(5)
+            print("Already logged in (session from Chrome profile)")
+            self.click_search_icon()
+            return
+        except:
+            pass
 
-            print("Logged in successfully")
+        # Try cookie-based login as fallback
+        if self.load_cookies():
+            self.click_search_icon()
+            return
 
-        except Exception as e:
-            print(f"Automated login failed: {e}")
-            print("\nMANUAL LOGIN IS REQUIRED")
-            print("Log in manually from the browser window.")
-            input("Press Enter in this terminal after logging in")
+        # No session — manual login required (avoids bot detection)
+        print("\nMANUAL LOGIN REQUIRED")
+        print("A browser window will open to the X login page.")
+        print("Please log in manually in the browser.")
+        self.driver.get("https://x.com/login")
+        time.sleep(3)
+        input("Press Enter in this terminal after you have logged in...")
+        time.sleep(2)
+
+        # Save cookies as backup
+        self.save_cookies()
 
         # Progress to next step
         self.click_search_icon()
@@ -242,29 +291,73 @@ class TwitterScraper:
 
         time.sleep(1)
 
-        # Click on the "Search for " suggestion instead of pressing Enter (Human mimic)
+        # Click on the ticker suggestion from the dropdown (e.g. "$nvda")
+        # Extract the ticker part (e.g. "$NVDA") from the query for matching
+        ticker_part = query.split()[0] if query else query
+        clicked_suggestion = False
         try:
-            search_suggestion = WebDriverWait(self.driver, 5).until(
-                EC.element_to_be_clickable((By.XPATH, f'//span[contains(text(), "Search for")]'))
+            # Look for the suggestion div containing the ticker text
+            suggestion = WebDriverWait(self.driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH,
+                    f'//span[translate(text(),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="{ticker_part.lower()}"]/ancestor::div[contains(@class,"r-1mmae3n")]'
+                ))
             )
-            search_suggestion.click()
-            print(f"Clicked search suggestion")
+            suggestion.click()
+            print(f"Clicked ticker suggestion for {ticker_part}")
+            clicked_suggestion = True
             time.sleep(random.uniform(3, 5))
         except:
-            # Fallback to pressing Enter if suggestion not found
-            print("Search suggestion not found, pressing Enter")
+            pass
+
+        if not clicked_suggestion:
+            # Fallback: try clicking "Search for" suggestion
+            try:
+                search_suggestion = WebDriverWait(self.driver, 3).until(
+                    EC.element_to_be_clickable((By.XPATH, '//span[contains(text(), "Search for")]'))
+                )
+                search_suggestion.click()
+                print("Clicked 'Search for' suggestion")
+                clicked_suggestion = True
+                time.sleep(random.uniform(3, 5))
+            except:
+                pass
+
+        if not clicked_suggestion:
+            # Final fallback: press Enter
+            print("No suggestion found, pressing Enter")
             search_input.send_keys(Keys.ENTER)
             time.sleep(random.uniform(3, 5))
 
-        # Click on "Top" tab to get top tweets
-        try:
-            top_tab = WebDriverWait(self.driver, 5).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, 'a[href*="f=top"], [role="tab"]:first-child'))
-            )
-            top_tab.click()
-            time.sleep(2)
-        except:
-            pass  # Already on top tab or tab not found
+        # Click "Latest" tab to get chronological tweets
+        latest_selectors = [
+            'a[href*="f=live"]',  # Original selector
+            'a[role="tab"]:has-text("Latest")',  # Tab with "Latest" text
+            '//span[text()="Latest"]/ancestor::a[@role="tab"]',  # XPath fallback
+            '//div[@role="tablist"]//span[contains(text(), "Latest")]/ancestor::a',  # Another XPath
+            'a[aria-label*="Latest"]',  # Aria label
+        ]
+
+        clicked = False
+        for selector in latest_selectors:
+            try:
+                if selector.startswith('//'):  # XPath selector
+                    latest_tab = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                else:  # CSS selector
+                    latest_tab = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    )
+                latest_tab.click()
+                print("Switched to Latest tab")
+                time.sleep(random.uniform(2, 4))
+                clicked = True
+                break
+            except Exception:
+                continue
+
+        if not clicked:
+            print("Could not click Latest tab with any selector - continuing with Top results")
 
     def search_tweets(self, ticker, date, max_refresh_attempts=3, error_wait_minutes=10):
         # Searches for tweets with ticker symbol on a specific date chunk
@@ -576,9 +669,20 @@ class TwitterScraper:
     def close(self):
         if self.driver:
             try:
-                self.driver.quit()
-            except OSError:
-                pass  # Ignore the Windows handle errors
+                # More aggressive cleanup to prevent handle errors
+                self.driver.close()  # Close current window first
+                time.sleep(1)
+                self.driver.quit()   # Then quit the driver
+            except (OSError, Exception) as e:
+                print(f"Error during cleanup (ignored): {e}")
+                # Force kill any remaining Chrome processes if needed
+                try:
+                    import psutil
+                    for proc in psutil.process_iter(['name']):
+                        if 'chrome' in proc.info['name'].lower():
+                            proc.kill()
+                except:
+                    pass
 
 # Return absolute path to the project's tweets folder.
 def get_project_tweets_dir():
@@ -636,8 +740,8 @@ def main():
         "XOM",
     ]
 
-    START_DATE = datetime(2023, 10, 10)  # Starting date
-    END_DATE = datetime(2025, 10, 10)    # End date
+    START_DATE = datetime(2025, 12, 31)  # Starting date
+    END_DATE = datetime(2026,1 ,31)    # End date
 
     # Ensure tweets directory exists
     tweets_dir = get_project_tweets_dir()
