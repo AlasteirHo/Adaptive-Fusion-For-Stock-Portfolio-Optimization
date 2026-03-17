@@ -1,0 +1,577 @@
+"""Portfolio Simulation page.
+
+Loads data, trains the model, runs backtests, and displays interactive results.
+Rebalance dates are shown as clickable markers on the NAV chart; clicking one
+reveals the portfolio allocation and point-in-time metrics.
+"""
+
+import contextlib
+import io
+import traceback
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+from backend.config import (
+    BACKTEST_END,
+    BACKTEST_START,
+    DEVICE,
+    DEVICE_NAME,
+    FACTOR_COLS,
+    REBALANCE_DAYS,
+    RETRAIN_EVERY,
+    TOP_N_STOCKS,
+    USE_AMP,
+)
+from backend.data import load_all_data
+from backend.features import build_features
+from backend.model import load_or_train
+from backend.backtest import (
+    run_backtest,
+    run_equal_weight,
+    run_spy_bah,
+)
+
+st.title("Portfolio Simulation")
+
+# ---------------------------------------------------------------------------
+# Chart heights & colour palette
+# ---------------------------------------------------------------------------
+CHART_HEIGHT_LARGE = 500
+CHART_HEIGHT_MED   = 400
+CHART_HEIGHT_SMALL = 320
+
+PALETTE = [
+    "#6C63FF",   # primary purple
+    "#48C9B0",   # teal
+    "#F39C12",   # amber
+    "#E74C3C",   # red
+    "#3498DB",   # blue
+    "#1ABC9C",   # mint
+    "#9B59B6",   # violet
+    "#E67E22",   # orange
+]
+
+PLOTLY_LAYOUT = dict(
+    template="plotly_dark",
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(14,17,23,0.6)",
+    font=dict(family="Inter, sans-serif", color="#E0E0E0"),
+    colorway=PALETTE,
+    xaxis=dict(gridcolor="rgba(108,99,255,0.08)", zerolinecolor="rgba(108,99,255,0.15)"),
+    yaxis=dict(gridcolor="rgba(108,99,255,0.08)", zerolinecolor="rgba(108,99,255,0.15)"),
+)
+
+
+# ---------------------------------------------------------------------------
+# Stdout capture helper
+# ---------------------------------------------------------------------------
+class _StreamCapture(io.StringIO):
+    def __init__(self, original):
+        super().__init__()
+        self._original = original
+
+    def write(self, s):
+        self._original.write(s)
+        return super().write(s)
+
+    def flush(self):
+        self._original.flush()
+        super().flush()
+
+
+@contextlib.contextmanager
+def capture_stdout():
+    import sys
+    buf = _StreamCapture(sys.stdout)
+    old = sys.stdout
+    sys.stdout = buf
+    try:
+        yield buf
+    finally:
+        sys.stdout = old
+
+
+# ---------------------------------------------------------------------------
+# Metrics helpers
+# ---------------------------------------------------------------------------
+
+def _metrics_from_nav(nav):
+    """Compute strategy metrics from a NAV series."""
+    if len(nav) < 2:
+        return {}
+    rets = nav.pct_change().dropna()
+    if len(rets) < 1:
+        return {}
+    ann_ret = (1 + rets).prod() ** (252 / len(rets)) - 1
+    ann_vol = rets.std() * np.sqrt(252)
+    sharpe = ann_ret / ann_vol if ann_vol > 0 else 0.0
+    max_dd = ((nav - nav.cummax()) / nav.cummax()).min()
+    calmar = ann_ret / abs(max_dd) if max_dd != 0 else float("nan")
+    total_ret = (nav.iloc[-1] / nav.iloc[0]) - 1
+    return {
+        "Sharpe Ratio":      round(sharpe, 4),
+        "Annualised Return": round(ann_ret, 4),
+        "Annualised Vol":    round(ann_vol, 4),
+        "Max Drawdown":      round(max_dd, 4),
+        "Calmar Ratio":      round(calmar, 4),
+        "Total Return":      round(total_ret, 4),
+    }
+
+
+def _format_metrics_df(rows):
+    if not rows:
+        return None
+    df = pd.DataFrame(rows).set_index("Strategy")
+    fmt = {
+        "Sharpe Ratio": "{:.4f}",
+        "Annualised Return": "{:.2%}",
+        "Annualised Vol": "{:.2%}",
+        "Max Drawdown": "{:.2%}",
+        "Calmar Ratio": "{:.4f}",
+        "Total Return": "{:.2%}",
+    }
+    display = df.copy()
+    for col, f in fmt.items():
+        if col in display.columns:
+            display[col] = display[col].apply(
+                lambda x, fmt=f: fmt.format(x) if pd.notna(x) else "--"
+            )
+    return display
+
+
+# ---------------------------------------------------------------------------
+# Sidebar controls
+# ---------------------------------------------------------------------------
+st.sidebar.header("Simulation Settings")
+
+strategy_options = {
+    "Price-Only (no sentiment)":    {"use_sentiment": False, "use_adaptive": False},
+    "Static-Fusion (equal weight)": {"use_sentiment": True,  "use_adaptive": False},
+    "Adaptive Fixed":               {"use_sentiment": True,  "use_adaptive": True, "retrain": 0},
+    "Adaptive Walk-Forward":        {"use_sentiment": True,  "use_adaptive": True, "retrain": RETRAIN_EVERY},
+}
+
+selected_strategies = st.sidebar.multiselect(
+    "Strategies to run",
+    options=list(strategy_options.keys()),
+    default=["Adaptive Fixed"],
+)
+
+run_benchmarks = st.sidebar.checkbox("Include SPY & Equal-Weight benchmarks", value=True)
+
+st.sidebar.divider()
+st.sidebar.markdown(
+    f"**Config snapshot**\n"
+    f"- Backtest: {BACKTEST_START} to {BACKTEST_END}\n"
+    f"- Top N stocks: {TOP_N_STOCKS}\n"
+    f"- Rebalance: every {REBALANCE_DAYS} days\n"
+    f"- Device: {DEVICE_NAME}\n"
+    f"- Mixed precision: {USE_AMP}"
+)
+
+# ---------------------------------------------------------------------------
+# Main workflow
+# ---------------------------------------------------------------------------
+
+if not selected_strategies:
+    st.info("Select at least one strategy from the sidebar.")
+    st.stop()
+
+run_btn = st.button("Run Simulation", type="primary", width="stretch")
+
+if run_btn:
+    try:
+        # ---- Step 1: Load data ----
+        with st.status("Loading data...", expanded=True) as status:
+            with capture_stdout() as buf:
+                price_data, sentiment_data, master_data, spy_returns = load_all_data()
+                feature_data = build_features(master_data)
+            st.code(buf.getvalue(), language="text")
+            status.update(
+                label=f"Data loaded: {len(feature_data)} tickers, {len(FACTOR_COLS)} factors",
+                state="complete",
+            )
+
+        # ---- Step 2: Train model if needed ----
+        needs_model = any(
+            strategy_options[s].get("use_adaptive", False)
+            for s in selected_strategies
+        )
+
+        model = None
+        if needs_model:
+            with st.status("Training Adaptive Fusion Network...", expanded=True) as status:
+                train_bar = st.progress(0, text="Initialising...")
+                train_log = st.empty()
+
+                def _train_progress(epoch, train_ic, val_ic, total):
+                    pct = min(epoch / total, 1.0)
+                    train_bar.progress(pct, text=f"Epoch {epoch}/{total}")
+                    train_log.text(
+                        f"Train IC: {train_ic:.4f} | Val IC: {val_ic:.4f} | "
+                        f"Gap: {train_ic - val_ic:+.4f}"
+                    )
+
+                with capture_stdout() as buf:
+                    model, train_hist, val_hist = load_or_train(
+                        feature_data,
+                        force_retrain=True,
+                        progress_callback=_train_progress,
+                    )
+                train_bar.progress(1.0, text="Training complete")
+                st.code(buf.getvalue(), language="text")
+                status.update(label="Training complete", state="complete")
+
+                if train_hist:
+                    fig_train = go.Figure()
+                    fig_train.add_trace(go.Scatter(
+                        y=[-v for v in train_hist], name="Train IC", mode="lines",
+                    ))
+                    fig_train.add_trace(go.Scatter(
+                        y=[-v for v in val_hist], name="Val IC", mode="lines",
+                    ))
+                    fig_train.update_layout(
+                        **PLOTLY_LAYOUT,
+                        title="Training Curves (IC per epoch)",
+                        xaxis_title="Epoch", yaxis_title="Information Coefficient",
+                        height=CHART_HEIGHT_SMALL, autosize=True,
+                        margin=dict(l=40, r=20, t=40, b=40),
+                    )
+                    st.plotly_chart(fig_train, width="stretch", key="train_curve")
+
+        # ---- Step 3: Run strategies ----
+        with st.status("Running backtests...", expanded=True) as status:
+            bt_bar = st.progress(0, text="Starting...")
+            completed = {}
+            n_total = len(selected_strategies)
+
+            for i, strat_name in enumerate(selected_strategies):
+                opts = strategy_options[strat_name]
+
+                def _bt_progress(day_idx, total, dt, nav,
+                                 nav_history, weight_records, trade_records,
+                                 _i=i, _name=strat_name):
+                    inner_pct = day_idx / max(total, 1)
+                    overall = (_i + inner_pct) / n_total
+                    bt_bar.progress(
+                        min(overall, 1.0),
+                        text=f"{_name}: day {day_idx}/{total}  |  NAV: ${nav:,.2f}",
+                    )
+
+                with capture_stdout() as buf:
+                    result = run_backtest(
+                        name=strat_name,
+                        feature_data=feature_data,
+                        price_data=price_data,
+                        model=model if opts.get("use_adaptive") else None,
+                        use_sentiment=opts["use_sentiment"],
+                        use_adaptive=opts.get("use_adaptive", False),
+                        retrain_every=opts.get("retrain", 0),
+                        progress_callback=_bt_progress,
+                    )
+                st.code(buf.getvalue(), language="text")
+                completed[strat_name] = result
+
+            if run_benchmarks:
+                bt_bar.progress(0.95, text="Running benchmarks...")
+                with capture_stdout() as buf:
+                    completed["SPY Buy-and-Hold"] = run_spy_bah(spy_returns)
+                    completed["Equal-Weight"] = run_equal_weight(price_data)
+                st.code(buf.getvalue(), language="text")
+
+            bt_bar.progress(1.0, text="All backtests complete")
+            status.update(label="All backtests complete", state="complete")
+
+        st.session_state["sim_results"] = completed
+
+    except Exception as e:
+        st.error(f"Simulation failed: {e}")
+        st.code(traceback.format_exc(), language="text")
+
+# ---------------------------------------------------------------------------
+# Results
+# ---------------------------------------------------------------------------
+if "sim_results" not in st.session_state:
+    st.stop()
+
+results = st.session_state["sim_results"]
+
+st.divider()
+st.header("Results")
+
+# ---- Full metrics table ----
+st.subheader("Performance Metrics")
+full_rows = [{"Strategy": n, **r.metrics} for n, r in results.items() if r.metrics]
+mdf = _format_metrics_df(full_rows)
+if mdf is not None:
+    st.dataframe(mdf, width="stretch")
+
+# ---- NAV chart with clickable rebalance markers ----
+st.subheader("NAV Comparison")
+st.caption("Click a rebalance marker to inspect allocation and metrics at that point.")
+
+fig_nav = go.Figure()
+color_idx = 0
+for name, res in results.items():
+    nav = res.nav_series
+    if len(nav) == 0:
+        continue
+    color = PALETTE[color_idx % len(PALETTE)]
+
+    # Continuous line
+    fig_nav.add_trace(go.Scatter(
+        x=nav.index, y=nav.values,
+        name=name, mode="lines",
+        line=dict(color=color),
+        hovertemplate="%{x|%Y-%m-%d}<br>$%{y:,.2f}<extra>" + name + "</extra>",
+    ))
+
+    # Rebalance markers (clickable)
+    if res.rebalance_dates:
+        mask = nav.index.isin(res.rebalance_dates)
+        rebal_nav = nav[mask]
+        if len(rebal_nav) > 0:
+            fig_nav.add_trace(go.Scatter(
+                x=rebal_nav.index,
+                y=rebal_nav.values,
+                mode="markers",
+                marker=dict(
+                    size=9, color=color,
+                    line=dict(width=1.5, color="white"),
+                ),
+                showlegend=False,
+                hovertemplate=(
+                    f"<b>{name}</b><br>"
+                    "%{x|%Y-%m-%d}<br>"
+                    "NAV: $%{y:,.2f}<br>"
+                    "<i>Click to inspect</i>"
+                    "<extra></extra>"
+                ),
+            ))
+
+    color_idx += 1
+
+fig_nav.update_layout(
+    **PLOTLY_LAYOUT,
+    clickmode="event+select",
+    dragmode=False,
+    xaxis_title="Date", yaxis_title="Portfolio Value ($)",
+    height=CHART_HEIGHT_LARGE, autosize=True,
+    margin=dict(l=50, r=20, t=30, b=40),
+    hovermode="closest",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+)
+
+event = st.plotly_chart(
+    fig_nav,
+    on_select="rerun",
+    selection_mode=("points",),
+    width="stretch",
+    key="nav_select",
+)
+
+# ---- Inspection panel (appears on marker click) ----
+inspect_date = None
+if event.selection.points:
+    raw_x = event.selection.points[0]["x"]
+    inspect_date = pd.Timestamp(raw_x)
+    st.session_state["inspect_date"] = inspect_date
+elif "inspect_date" in st.session_state:
+    inspect_date = st.session_state["inspect_date"]
+
+if inspect_date is not None:
+    with st.container(border=True):
+        st.subheader(f"Snapshot: {inspect_date.date()}")
+
+        # Point-in-time metrics
+        snap_rows = []
+        for name, res in results.items():
+            nav_slice = res.nav_series[res.nav_series.index <= inspect_date]
+            if len(nav_slice) >= 2:
+                snap_rows.append({"Strategy": name, **_metrics_from_nav(nav_slice)})
+        snap_mdf = _format_metrics_df(snap_rows)
+        if snap_mdf is not None:
+            st.dataframe(snap_mdf, width="stretch")
+
+        # Pie charts for strategies that have weights at or before this date
+        pie_strats = {}
+        for name, res in results.items():
+            if res.weight_history.empty:
+                continue
+            wh = res.weight_history[res.weight_history.index <= inspect_date]
+            if not wh.empty:
+                pie_strats[name] = wh.iloc[-1]
+
+        if pie_strats:
+            pie_cols = st.columns(max(len(pie_strats), 1))
+            for col, (name, weights) in zip(pie_cols, pie_strats.items()):
+                with col:
+                    w = weights[weights > 0].sort_values(ascending=False)
+                    if w.empty:
+                        continue
+                    rebal_date = weights.name
+                    rebal_label = (
+                        rebal_date.date()
+                        if hasattr(rebal_date, "date") else rebal_date
+                    )
+                    fig_pie = go.Figure(go.Pie(
+                        labels=w.index, values=w.values, hole=0.4,
+                        marker=dict(colors=PALETTE[:len(w)]),
+                        textinfo="label+percent", textposition="outside",
+                    ))
+                    fig_pie.update_layout(
+                        **PLOTLY_LAYOUT,
+                        title=f"{name}<br><sup>Rebalance: {rebal_label}</sup>",
+                        height=CHART_HEIGHT_SMALL, autosize=True,
+                        margin=dict(l=10, r=10, t=60, b=10),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(
+                        fig_pie, width="stretch",
+                        key=f"snap_pie_{name}",
+                    )
+
+# ---- Drawdown ----
+st.subheader("Drawdown Comparison")
+fig_dd = go.Figure()
+for name, res in results.items():
+    nav = res.nav_series
+    if len(nav) > 0:
+        dd = (nav - nav.cummax()) / nav.cummax() * 100
+        fig_dd.add_trace(go.Scatter(
+            x=dd.index, y=dd.values, name=name, mode="lines", fill="tozeroy",
+        ))
+fig_dd.update_layout(
+    **PLOTLY_LAYOUT,
+    xaxis_title="Date", yaxis_title="Drawdown (%)",
+    height=CHART_HEIGHT_MED, autosize=True,
+    margin=dict(l=50, r=20, t=30, b=40),
+    hovermode="x unified",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+)
+st.plotly_chart(fig_dd, width="stretch", key="dd_chart")
+
+# ---- Weight evolution ----
+strategies_with_weights = {
+    n: r for n, r in results.items() if not r.weight_history.empty
+}
+if strategies_with_weights:
+    st.subheader("Weight Evolution")
+    weight_tabs = st.tabs(list(strategies_with_weights.keys()))
+    for tab, (name, res) in zip(weight_tabs, strategies_with_weights.items()):
+        with tab:
+            fig_w = go.Figure()
+            for col in res.weight_history.columns:
+                fig_w.add_trace(go.Scatter(
+                    x=res.weight_history.index,
+                    y=res.weight_history[col],
+                    name=col, mode="lines", stackgroup="one",
+                ))
+            fig_w.update_layout(
+                **PLOTLY_LAYOUT,
+                xaxis_title="Date", yaxis_title="Weight",
+                height=CHART_HEIGHT_MED, autosize=True,
+                margin=dict(l=50, r=20, t=30, b=40),
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig_w, width="stretch", key=f"wt_{name}")
+
+# ---- Attention weights ----
+strategies_with_attention = {
+    n: r for n, r in results.items() if r.attention_history
+}
+if strategies_with_attention:
+    st.subheader("Attention Weights Over Time")
+    attn_tabs = st.tabs(list(strategies_with_attention.keys()))
+    for tab, (name, res) in zip(attn_tabs, strategies_with_attention.items()):
+        with tab:
+            attn_df = pd.DataFrame(res.attention_history).set_index("date")
+            rename = {
+                "z_news_sentiment": "News", "z_social_sentiment": "Social",
+                "z_rsi": "RSI", "z_momentum": "Momentum",
+                "z_reversal": "Reversal", "z_abnormal_volume": "Volume",
+                "z_idiovol": "Idiovol", "z_52w_high_ratio": "52w High",
+            }
+            attn_df = attn_df.rename(columns=rename)
+            fig_a = go.Figure()
+            for col in attn_df.columns:
+                fig_a.add_trace(go.Scatter(
+                    x=attn_df.index, y=attn_df[col],
+                    name=col, mode="lines", stackgroup="one",
+                ))
+            fig_a.update_layout(
+                **PLOTLY_LAYOUT,
+                xaxis_title="Date", yaxis_title="Attention Weight",
+                height=CHART_HEIGHT_MED, autosize=True,
+                margin=dict(l=50, r=20, t=30, b=40),
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig_a, width="stretch", key=f"attn_{name}")
+
+            mean_attn = attn_df.mean()
+            fig_bar = go.Figure(go.Bar(
+                x=mean_attn.index, y=mean_attn.values,
+                marker_color=PALETTE[:len(mean_attn)],
+            ))
+            fig_bar.update_layout(
+                **PLOTLY_LAYOUT,
+                title="Mean Attention Weights",
+                yaxis_title="Weight", height=CHART_HEIGHT_SMALL,
+                autosize=True, margin=dict(l=40, r=20, t=40, b=40),
+            )
+            st.plotly_chart(fig_bar, width="stretch", key=f"attn_bar_{name}")
+
+# ---- Trade log ----
+strategies_with_trades = {
+    n: r for n, r in results.items() if r.trade_log
+}
+if strategies_with_trades:
+    st.subheader("Trade Log")
+    trade_tabs = st.tabs(list(strategies_with_trades.keys()))
+    for tab, (name, res) in zip(trade_tabs, strategies_with_trades.items()):
+        with tab:
+            trade_df = pd.DataFrame(res.trade_log)
+            trade_df["date"] = pd.to_datetime(trade_df["date"]).dt.date
+            trade_df["value"] = trade_df["value"].round(2)
+            trade_df["price"] = trade_df["price"].round(2)
+            trade_df["shares"] = trade_df["shares"].round(4)
+
+            col_summary, col_download = st.columns([3, 1])
+            with col_summary:
+                n_buys = (trade_df["action"] == "BUY").sum()
+                n_sells = (trade_df["action"] == "SELL").sum()
+                st.markdown(
+                    f"**{len(trade_df)}** trades total: "
+                    f"**{n_buys}** buys, **{n_sells}** sells"
+                )
+            with col_download:
+                csv_data = trade_df.to_csv(index=False)
+                st.download_button(
+                    "Download CSV", csv_data,
+                    file_name=f"{name.replace(' ', '_')}_trades.csv",
+                    mime="text/csv",
+                    key=f"dl_{name}",
+                )
+
+            st.dataframe(trade_df, width="stretch", height=400)
+
+# ---- Return distribution ----
+st.subheader("Daily Return Distribution")
+fig_hist = go.Figure()
+for name, res in results.items():
+    rets = res.returns_series.dropna() * 100
+    if len(rets) > 0:
+        fig_hist.add_trace(go.Histogram(
+            x=rets.values, name=name, opacity=0.6, nbinsx=60,
+        ))
+fig_hist.update_layout(
+    **PLOTLY_LAYOUT,
+    xaxis_title="Daily Return (%)", yaxis_title="Frequency",
+    barmode="overlay", height=CHART_HEIGHT_SMALL, autosize=True,
+    margin=dict(l=40, r=20, t=30, b=40),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+)
+st.plotly_chart(fig_hist, width="stretch", key="hist_chart")
