@@ -17,7 +17,7 @@ from datetime import date, timedelta
 
 import streamlit as st
 
-from backend.config import RUNNERS_DIR, TICKERS
+from backend.config import PYTHON_EXE, RUNNERS_DIR, TICKERS
 
 st.title("Data Collection")
 st.markdown(
@@ -64,7 +64,7 @@ def _start_scraper(runner_script, extra_args, state_prefix):
     if _is_running(state_prefix):
         return
 
-    cmd = [sys.executable, str(runner_script)] + extra_args
+    cmd = [PYTHON_EXE, "-u", str(runner_script)] + extra_args
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
@@ -179,6 +179,7 @@ def _render_scraper_panel(title, state_prefix, runner_script, default_tickers,
 
     log_lines = st.session_state[f"{state_prefix}_log"]
     log_text = "\n".join(log_lines) if log_lines else "No output yet."
+    st.session_state[f"{state_prefix}_log_area"] = log_text
     st.text_area(
         "Log output", value=log_text, height=300,
         key=f"{state_prefix}_log_area", disabled=True, label_visibility="collapsed",
@@ -288,6 +289,7 @@ _drain_queue("sentiment")
 
 sent_log_lines = st.session_state["sentiment_log"]
 sent_log_text = "\n".join(sent_log_lines) if sent_log_lines else "No output yet."
+st.session_state["sentiment_log_area"] = sent_log_text
 st.text_area(
     "Log output", value=sent_log_text, height=300,
     key="sentiment_log_area", disabled=True, label_visibility="collapsed",
