@@ -1,7 +1,5 @@
 # Adaptive Multi-Factor Fusion For Portfolio Optimisation
 
-[![tests](https://github.com/AlasteirHo/Adaptive-Multi-Factor-Fusion-Portfolio-Optimisation/actions/workflows/tests.yml/badge.svg)](https://github.com/AlasteirHo/Adaptive-Multi-Factor-Fusion-Portfolio-Optimisation/actions/workflows/tests.yml)
-
 A context-conditioned attention network for adaptive multi-factor fusion in Black-Litterman portfolio optimisation. The system dynamically weights eight factor signals (news sentiment, social sentiment, and six technical indicators) based on volatility regime, data availability, and sector characteristics.
 
 **Author:** Alasteir Ho Zhen Wei  
@@ -167,9 +165,6 @@ Composite alpha scores are integrated into a **Black-Litterman** framework (tau=
 
 ```
 Adaptive-Multi-Factor-Fusion-Portfolio-Optimisation/
-|-- .github/
-|   +-- workflows/
-|       +-- tests.yml                 # CI: runs the pytest suite on push and PR
 |-- .gitignore                        # Excludes .env, caches, and local data
 |-- Dashboard/
 |   |-- backend/                      # Python package (9 modules)
