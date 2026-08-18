@@ -1,0 +1,21 @@
+# Credentials. The Twitter scraper reads these; never commit a populated copy.
+.env
+Dashboard/.env
+
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local datasets. Download the archive separately, see the Installation section.
+Raw_Data/
+Processed_Data/
+Dashboard/Raw_Data/
+Dashboard/Processed_Data/
+
+# Editor and OS clutter
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
