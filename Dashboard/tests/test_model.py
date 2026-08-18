@@ -7,7 +7,7 @@ import pytest
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from backend.model import AdaptiveFusionNetwork, pearson_ic_loss, rank_ic_loss, attention_entropy
+from backend.model import AdaptiveFusionNetwork, pearson_ic_loss, attention_entropy
 
 
 # ── AdaptiveFusionNetwork ────────────────────────────────────────────
@@ -87,11 +87,15 @@ class TestPearsonICLoss:
         loss = pearson_ic_loss(preds, targets)
         assert abs(loss.item()) < 0.5  # near zero
 
-    def test_alias_works(self):
-        # rank_ic_loss should be same function
-        preds = torch.tensor([1.0, 2.0, 3.0])
-        targets = torch.tensor([1.0, 2.0, 3.0])
-        assert pearson_ic_loss(preds, targets) == rank_ic_loss(preds, targets)
+    def test_is_pearson_not_spearman(self):
+        # Monotone but non-linear inputs: a rank (Spearman) IC would be
+        # exactly 1.0 here, whereas Pearson IC is strictly below it. This
+        # pins the loss to Pearson and guards the old rank-IC misnomer
+        # from creeping back in.
+        preds = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        targets = torch.tensor([1.0, 2.0, 3.0, 100.0])
+        loss = pearson_ic_loss(preds, targets)
+        assert loss.item() > -0.99
 
 
 # ── Attention Entropy ────────────────────────────────────────────────

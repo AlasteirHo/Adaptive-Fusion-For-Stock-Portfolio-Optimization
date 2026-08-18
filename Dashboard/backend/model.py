@@ -215,16 +215,13 @@ def pearson_ic_loss(predictions, targets):
     )
 
 
-rank_ic_loss = pearson_ic_loss
-
-
 def attention_entropy(weights):
     return -(weights * (weights + 1e-8).log()).sum(dim=-1).mean()
 
 
 def train_model(feature_data, train_end=None, verbose=True, k_dates=BATCH_SIZE,
                 warm_start_state=None, progress_callback=None):
-    """Train the fusion network using cross-sectional rank-IC loss.
+    """Train the fusion network using cross-sectional Pearson IC loss.
 
     Targets are the volatility-adjusted, winsorised ``fwd_return_{FWD_HORIZON}d``
     columns. Stop-loss is applied downstream in :func:`backend.backtest.run_backtest`
@@ -273,7 +270,7 @@ def train_model(feature_data, train_end=None, verbose=True, k_dates=BATCH_SIZE,
                 if len(t_b) >= 4:
                     with torch.amp.autocast("cuda", enabled=USE_AMP):
                         baseline_ics.append(
-                            -rank_ic_loss(model(f_b, c_b)[0], t_b).item())
+                            -pearson_ic_loss(model(f_b, c_b)[0], t_b).item())
         baseline_val_ic = float(np.mean(baseline_ics)) if baseline_ics else 0.0
         best_val_loss = -baseline_val_ic
         best_state = {k: v.clone() for k, v in model.state_dict().items()}
@@ -283,7 +280,7 @@ def train_model(feature_data, train_end=None, verbose=True, k_dates=BATCH_SIZE,
 
     if verbose:
         device_label = torch.cuda.get_device_name(0) if DEVICE == "cuda" else DEVICE
-        print(f"Training on {device_label} (cross-sectional rank-IC) "
+        print(f"Training on {device_label} (cross-sectional Pearson IC) "
               f"for up to {TRAIN_EPOCHS} epochs ...")
 
     for epoch in range(1, TRAIN_EPOCHS + 1):
@@ -303,7 +300,7 @@ def train_model(feature_data, train_end=None, verbose=True, k_dates=BATCH_SIZE,
                     continue
                 with torch.amp.autocast("cuda", enabled=USE_AMP):
                     preds, attn = model(factor_batch, context_batch)
-                    date_loss = rank_ic_loss(preds, target_batch)
+                    date_loss = pearson_ic_loss(preds, target_batch)
                 batch_losses.append(date_loss)
                 batch_attentions.append(attn)
                 train_ic_list.append(-date_loss.item())
@@ -327,7 +324,7 @@ def train_model(feature_data, train_end=None, verbose=True, k_dates=BATCH_SIZE,
                 if len(target_batch) >= 4:
                     with torch.amp.autocast("cuda", enabled=USE_AMP):
                         val_ic_list.append(
-                            -rank_ic_loss(
+                            -pearson_ic_loss(
                                 model(factor_batch, context_batch)[0], target_batch
                             ).item()
                         )

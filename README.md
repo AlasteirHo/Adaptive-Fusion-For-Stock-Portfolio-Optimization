@@ -1,5 +1,7 @@
 # Adaptive Multi-Factor Fusion For Portfolio Optimisation
 
+[![tests](https://github.com/AlasteirHo/Adaptive-Multi-Factor-Fusion-Portfolio-Optimisation/actions/workflows/tests.yml/badge.svg)](https://github.com/AlasteirHo/Adaptive-Multi-Factor-Fusion-Portfolio-Optimisation/actions/workflows/tests.yml)
+
 A context-conditioned attention network for adaptive multi-factor fusion in Black-Litterman portfolio optimisation. The system dynamically weights eight factor signals (news sentiment, social sentiment, and six technical indicators) based on volatility regime, data availability, and sector characteristics.
 
 **Author:** Alasteir Ho Zhen Wei  
@@ -82,7 +84,7 @@ Context (10-dim) --> FC(32) --> ReLU --> Dropout(0.2)
 8 Z-scored Factors x Factor Weights --> Composite Alpha Score
 ```
 
-The network is trained by maximising the information coefficient (IC) between predicted alpha scores and next-day cross-sectional returns.
+The network is trained by maximising the Pearson information coefficient (IC) between predicted alpha scores and next-day cross-sectional returns.
 
 ### Strategy Hierarchy
 
@@ -164,7 +166,11 @@ Composite alpha scores are integrated into a **Black-Litterman** framework (tau=
 ## Project Structure
 
 ```
-Adaptive-Fusion-For-Stock-Portfolio-Optimization/
+Adaptive-Multi-Factor-Fusion-Portfolio-Optimisation/
+|-- .github/
+|   +-- workflows/
+|       +-- tests.yml                 # CI: runs the pytest suite on push and PR
+|-- .gitignore                        # Excludes .env, caches, and local data
 |-- Dashboard/
 |   |-- backend/                      # Python package (9 modules)
 |   |   |-- backtest.py               #   Walk-forward backtest engine
@@ -191,23 +197,30 @@ Adaptive-Fusion-For-Stock-Portfolio-Optimization/
 |       |-- test_model.py             #   13 tests for attention network
 |       +-- test_optimizer.py         #   17 tests for BL and MVO
 |-- Diagrams/                         # Architecture diagrams and result figures
+|-- EDA/
+|   +-- dataset_eda.ipynb             # Exploratory analysis of the dataset
+|-- LICENSE
 |-- Portfolio_Optimizer/
 |   |-- Adaptive_Fusion_POC.ipynb           # Main research notebook (base backtest)
 |   |-- Adaptive_Fusion_POC_StopLoss.ipynb  # Stop-loss ablation notebook
-|   +-- fusion_network.pt                   # Pre-trained model weights (Fixed)
+|   |-- fusion_network.pt                   # Pre-trained model weights (Fixed)
+|   |-- fusion_network2.pt                  # Pre-trained model weights (stop-loss)
+|   +-- outputs/                            # Backtest metrics and result figures
 |-- Preprocessing/
 |   |-- news_preprocessing_labelling.ipynb
 |   +-- tweets_preprocessing_labelling.ipynb
-|-- Processed_Data/                   # Daily sentiment CSV files
-|-- Raw_Data/                         # Unprocessed scraper outputs
+|-- Processed_Data/                   # Daily sentiment CSV files (dataset archive)
+|-- Raw_Data/                         # Unprocessed scraper outputs (dataset archive)
 |-- README.md
+|-- Report.pdf                        # Final year project report
 |-- requirements.txt
 |-- Scrapers/
 |   |-- GDELTscraper.py               # GDELT news headline collection
 |   +-- twitter_scraper.py            # Selenium-based tweet collection
 +-- Sentiment_Model/
     |-- model_evaluation.ipynb        # FIN-RoBERTa benchmark evaluation
-    +-- RoBERTa-Train/                # Fine-tuning scripts and training data
+    |-- RoBERTa-Train/                # Fine-tuning scripts and training data
+    +-- train.ipynb                   # FIN-RoBERTa fine-tuning notebook
 ```
 
 ## Installation
@@ -252,6 +265,8 @@ Adaptive-Fusion-For-Stock-Portfolio-Optimization/
    Required paths:
    - `./.env` (project root) -- used by `Scrapers/twitter_scraper.py`
    - `Dashboard/.env` -- used by the Dashboard's bundled `services/twitter_runner.py` for auto-login when you launch the scraper from the dashboard UI
+
+   These credentials were used purely to collect tweets for academic coursework. The scraper is not needed to reproduce any of the reported results if you download the prepared dataset in step 6. Never commit a populated `.env` file and never reuse a password from another service. Both paths above are listed in `.gitignore`, so they stay out of version control.
 
 6. **Download and unpack the dataset:**
 
